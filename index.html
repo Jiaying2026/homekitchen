@@ -29,6 +29,17 @@ body::after {
 @keyframes slideUp { from{transform:translateY(100%)} to{transform:translateY(0)} }
 @keyframes fadeIn { from{opacity:0} to{opacity:1} }
 @keyframes spin { to{transform:rotate(360deg)} }
+@keyframes dealIn { from{opacity:0;transform:translateY(-60px) rotate(var(--r)) scale(0.7)} to{opacity:1;transform:translateY(0) rotate(var(--r)) scale(1)} }
+@keyframes fanSpread { from{transform:translateX(-50%) rotate(var(--r)) translateY(60px) scale(0.8);opacity:0} to{transform:translateX(-50%) rotate(var(--r)) translateY(0) scale(1);opacity:1} }
+@keyframes cardPulse { 0%,100%{box-shadow:0 8px 32px rgba(155,96,40,0.35),0 0 0 0 rgba(200,160,80,0.4)} 50%{box-shadow:0 8px 32px rgba(155,96,40,0.35),0 0 0 8px rgba(200,160,80,0)} }
+@keyframes flipCard { 0%{transform:rotateY(0)} 50%{transform:rotateY(90deg)} 100%{transform:rotateY(0)} }
+@keyframes shimmerMucha { 0%{background-position:200% center} 100%{background-position:-200% center} }
+@keyframes revealCard { 0%{transform:scale(1) rotateY(90deg)} 60%{transform:scale(1.25) rotateY(-8deg)} 100%{transform:scale(1.2) rotateY(0)} }
+@keyframes glowPulse { 0%,100%{opacity:0.6} 50%{opacity:1} }
+@keyframes floatUp { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
+@keyframes shuffleCard { from{transform:translateY(0) rotate(var(--r,0deg))} to{transform:translateY(-14px) rotate(var(--r,0deg))} }
+@keyframes deckEntry { from{opacity:0;transform:translateX(-50%) rotate(var(--angle,0deg)) translateY(20px) scale(0.85)} to{opacity:1;transform:translateX(-50%) rotate(var(--angle,0deg)) translateY(0) scale(1)} }
+
 .anim-fade-up { animation: fadeUp 0.35s ease both; }
 </style>
 </head>
@@ -116,6 +127,8 @@ const T = {
     yourName:'您的名字', namePh2:'输入名字，或点击下方快捷选择',
     orType:'或手动输入后进入', connecting:'连接中 · Connecting…',
     portions:'份', totalItems:'共', items:'道菜',
+    blindBoxTab:'🎴 盲盒', blindBoxTitle:'今晚吃什么？', blindBoxSub:'命运为你选择今晚的菜肴',
+    shuffling:'洗牌中…', drawHint:'选一张牌，揭晓今晚的菜', again:'再抽一次', noDishesTip:'先去后台添加菜品，才能开始抽卡哦～', addToCartFromBox:'加入点单 ❤️',
   },
   en:{
     appTitle:'Home Kitchen', appSub:"What's for dinner · Family Love",
@@ -147,6 +160,8 @@ const T = {
     yourName:'Your Name', namePh2:'Enter name, or tap a quick choice below',
     orType:'or type above then tap Enter', connecting:'Connecting…',
     portions:'items', totalItems:'Total', items:'dishes',
+    blindBoxTab:'🎴 Box', blindBoxTitle:'What\'s for dinner?', blindBoxSub:'Let fate decide tonight\'s dish',
+    shuffling:'Shuffling…', drawHint:'Pick a card to reveal your dish', again:'Draw Again', noDishesTip:'Add dishes in Admin first to start drawing~', addToCartFromBox:'Add to Order ❤️',
   }
 };
 
@@ -290,23 +305,294 @@ function CartTab({dishes,cart,changeCart,t,lang}){
   </div>;
 }
 
+/* ── CSV parser (no library needed) ── */
+function parseCSV(text){
+  const lines=text.trim().split(/\r?\n/);
+  if(lines.length<2)return[];
+  // detect delimiter: comma or semicolon
+  const delim=lines[0].includes(';')?';':',';
+  const headers=lines[0].split(delim).map(h=>h.trim().toLowerCase().replace(/"/g,''));
+  const col=k=>headers.findIndex(h=>h===k||h.includes(k));
+  const iName=col('name')||col('菜名')||col('名');
+  const iDesc=Math.max(col('desc'),col('介绍'),col('description'));
+  const iEmoji=Math.max(col('emoji'),col('图标'),col('表情'));
+  return lines.slice(1).map(line=>{
+    // simple CSV split respecting quoted fields
+    const cells=[];let cur='',inQ=false;
+    for(let i=0;i<line.length;i++){
+      const ch=line[i];
+      if(ch==='"'){inQ=!inQ;}
+      else if(ch===delim&&!inQ){cells.push(cur.trim());cur='';}
+      else cur+=ch;
+    }
+    cells.push(cur.trim());
+    const name=(cells[iName]||'').replace(/"/g,'').trim();
+    if(!name)return null;
+    return{name,desc:(iDesc>=0?cells[iDesc]||'':'').replace(/"/g,'').trim(),emoji:(iEmoji>=0?cells[iEmoji]||'':'').replace(/"/g,'').trim()||'🍽️'};
+  }).filter(Boolean);
+}
+
+/* ── Download CSV template ── */
+function downloadTemplate(){
+  const bom='\uFEFF'; // UTF-8 BOM so Excel opens Chinese correctly
+  const csv=bom+'菜名,介绍,emoji\n红烧肉,慢火炖两小时软糯入味,🥩\n清蒸鱼,新鲜草鱼葱姜蒸制,🐟\n蒜蓉西兰花,大蒜爆香清脆爽口,🥦\n番茄蛋汤,家常暖心老味道,🍅\n';
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  a.download='菜单模板.csv';a.click();
+}
+
+/* ── Bulk Import Panel ── */
+function BulkImport({onBatchAdd,lang}){
+  const [preview,setPreview]=useState(null); // array of {name,desc,emoji}
+  const [importing,setImporting]=useState(false);
+  const [done,setDone]=useState(null);
+  const fileRef=useRef(null);
+
+  const handleFile=e=>{
+    const f=e.target.files?.[0];if(!f)return;
+    setDone(null);
+    const ext=f.name.split('.').pop().toLowerCase();
+    const reader=new FileReader();
+    if(ext==='csv'||ext==='txt'){
+      reader.onload=ev=>{
+        const rows=parseCSV(ev.target.result);
+        setPreview(rows);
+      };
+      reader.readAsText(f,'UTF-8');
+    } else if(ext==='xlsx'||ext==='xls'){
+      // Use SheetJS via CDN (loaded lazily)
+      reader.onload=async ev=>{
+        if(!window.XLSX){
+          const s=document.createElement('script');
+          s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+          document.head.appendChild(s);
+          await new Promise(r=>s.onload=r);
+        }
+        const wb=window.XLSX.read(ev.target.result,{type:'array'});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const json=window.XLSX.utils.sheet_to_json(ws,{defval:''});
+        const rows=json.map(row=>{
+          const name=(row['菜名']||row['name']||row['Name']||'').toString().trim();
+          if(!name)return null;
+          return{
+            name,
+            desc:(row['介绍']||row['desc']||row['description']||row['Description']||'').toString().trim(),
+            emoji:(row['emoji']||row['Emoji']||row['图标']||'').toString().trim()||'🍽️',
+          };
+        }).filter(Boolean);
+        setPreview(rows);
+      };
+      reader.readAsArrayBuffer(f);
+    }
+    // reset input so same file can be re-selected
+    e.target.value='';
+  };
+
+  const confirmImport=async()=>{
+    if(!preview?.length)return;
+    setImporting(true);
+    for(const row of preview){
+      await onBatchAdd({name:row.name,desc:row.desc,emoji:row.emoji,photo:null,ts:Date.now()});
+    }
+    setDone(preview.length);
+    setPreview(null);
+    setImporting(false);
+  };
+
+  const zh=lang==='zh';
+  return(
+    <div style={{background:'white',borderRadius:18,padding:'18px 14px',boxShadow:'0 3px 16px var(--shadow)',marginBottom:14}}>
+      {/* header */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+        <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:16,color:'var(--brown)'}}>
+          {zh?'📥 批量导入菜单':'📥 Bulk Import Menu'}
+        </div>
+        <button onClick={downloadTemplate} style={{fontSize:11,color:'var(--amber-d)',background:'rgba(200,135,58,0.1)',border:'1px solid rgba(200,135,58,0.3)',borderRadius:20,padding:'5px 11px',cursor:'pointer',whiteSpace:'nowrap'}}>
+          ⬇ {zh?'下载模板':'Template'}
+        </button>
+      </div>
+
+      {/* instructions */}
+      <div style={{background:'#FFFBF3',border:'1px dashed #E8C88A',borderRadius:12,padding:'11px 13px',fontSize:12,color:'var(--brown-l)',lineHeight:1.9,marginBottom:14}}>
+        {zh?<>
+          1. 点击「下载模板」获取 CSV 表格<br/>
+          2. 用 Excel / Numbers / 记事本 填写菜名、介绍、emoji<br/>
+          3. 保存后点下方按钮上传，预览无误后点「确认导入」
+        </>:<>
+          1. Download the template CSV<br/>
+          2. Fill in columns: 菜名 (name), 介绍 (desc), emoji<br/>
+          3. Upload the file below, preview, then confirm
+        </>}
+      </div>
+
+      {/* upload zone */}
+      <label style={{display:'block',border:'2px dashed #E8DDD0',borderRadius:14,background:'var(--warm)',cursor:'pointer',position:'relative',marginBottom:12}}>
+        <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls,.txt" onChange={handleFile} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}}/>
+        <div style={{textAlign:'center',padding:'20px 14px'}}>
+          <div style={{fontSize:28,marginBottom:6}}>📂</div>
+          <div style={{fontSize:13,color:'var(--brown-l)'}}>
+            {zh?'点击选择 CSV 或 Excel 文件':'Tap to choose CSV or Excel file'}
+          </div>
+          <div style={{fontSize:11,color:'#C0B0A0',marginTop:4}}>支持 .csv · .xlsx · .xls</div>
+        </div>
+      </label>
+
+      {/* success banner */}
+      {done!==null&&<div style={{background:'linear-gradient(135deg,#F0FFF0,#E0F5E0)',border:'1px solid #8BC88B',borderRadius:12,padding:'11px 14px',fontSize:13,color:'#3A7A3A',textAlign:'center',marginBottom:10}}>
+        ✅ {zh?`已成功导入 ${done} 道菜！`:`Successfully imported ${done} dishes!`}
+      </div>}
+
+      {/* preview table */}
+      {preview&&preview.length>0&&<>
+        <div style={{fontSize:12,color:'var(--brown-l)',marginBottom:8}}>
+          {zh?`预览 · 共 ${preview.length} 道菜`:`Preview · ${preview.length} dishes`}
+        </div>
+        <div style={{border:'1px solid #EDE0D0',borderRadius:12,overflow:'hidden',marginBottom:12}}>
+          {/* table header */}
+          <div style={{display:'grid',gridTemplateColumns:'36px 1fr 1fr',background:'var(--paper)',padding:'8px 12px',fontSize:11,color:'var(--brown-l)',fontWeight:600,letterSpacing:0.5}}>
+            <span>图标</span><span>菜名</span><span>{zh?'介绍':'Desc'}</span>
+          </div>
+          <div style={{maxHeight:220,overflowY:'auto'}}>
+            {preview.map((r,i)=>(
+              <div key={i} style={{display:'grid',gridTemplateColumns:'36px 1fr 1fr',padding:'9px 12px',fontSize:13,borderTop:'1px solid #F0E8D8',background:i%2===0?'white':'#FFFCF7',alignItems:'center',gap:6}}>
+                <span style={{fontSize:18}}>{r.emoji}</span>
+                <span style={{fontFamily:"'Noto Serif SC',serif",color:'var(--brown)',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.name}</span>
+                <span style={{color:'var(--brown-l)',fontSize:11,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.desc||'—'}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div style={{display:'flex',gap:10}}>
+          <button onClick={()=>setPreview(null)} style={{flex:1,padding:'13px 0',borderRadius:13,border:'none',background:'#F0E8D8',color:'var(--brown)',fontSize:14,cursor:'pointer',fontFamily:"'Noto Sans SC',sans-serif"}}>
+            {zh?'取消':'Cancel'}
+          </button>
+          <button onClick={confirmImport} disabled={importing} style={{flex:2,padding:'13px 0',borderRadius:13,border:'none',background:importing?'#DDD':'linear-gradient(135deg,var(--amber-d),var(--amber))',color:'white',fontSize:14,cursor:importing?'not-allowed':'pointer',fontFamily:"'Noto Sans SC',sans-serif",letterSpacing:1,boxShadow:importing?'none':'0 4px 12px rgba(155,96,40,0.3)',transition:'all 0.2s'}}>
+            {importing?(zh?'导入中…':'Importing…'):(zh?`确认导入 ${preview.length} 道菜`:`Import ${preview.length} dishes`)}
+          </button>
+        </div>
+      </>}
+      {preview&&preview.length===0&&<div style={{textAlign:'center',padding:'14px 0',fontSize:13,color:'var(--red)'}}>
+        {zh?'未读到有效菜品，请检查表格格式':'No valid rows found — check file format'}
+      </div>}
+    </div>
+  );
+}
+
+/* ── Image compressor ─────────────────────────────────────────────────────────
+   Draws the image onto a canvas at reduced size, then exports as JPEG.
+   maxKB: target file size ceiling (default 100 KB)
+   maxPx: longest edge in pixels (default 900)
+   Returns { dataUrl, kb } */
+// Accurately measure base64 data URL size in KB
+function dataUrlKB(dataUrl){
+  const base64=dataUrl.split(',')[1]||'';
+  const padding=(base64.endsWith('==')?2:base64.endsWith('=')?1:0);
+  return Math.round((base64.length*3/4-padding)/1024);
+}
+
+async function compressImage(file, maxKB=100, maxPx=900){
+  const origKb=Math.round(file.size/1024);
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    const url=URL.createObjectURL(file);
+    img.onload=()=>{
+      URL.revokeObjectURL(url);
+      let {naturalWidth:w,naturalHeight:h}=img;
+      if(w>maxPx||h>maxPx){
+        if(w>=h){h=Math.round(h*maxPx/w);w=maxPx;}
+        else{w=Math.round(w*maxPx/h);h=maxPx;}
+      }
+      const canvas=document.createElement('canvas');
+      canvas.width=w; canvas.height=h;
+      canvas.getContext('2d').drawImage(img,0,0,w,h);
+      // Binary-search JPEG quality; keep best (smallest passing) result
+      let lo=0.1, hi=0.92, bestUrl='', bestKb=9999, iter=0;
+      while(iter++<14){
+        const q=(lo+hi)/2;
+        const candidate=canvas.toDataURL('image/jpeg',q);
+        const kb=dataUrlKB(candidate);
+        if(kb<=maxKB){
+          bestUrl=candidate; bestKb=kb; lo=q;
+        } else {
+          hi=q;
+        }
+        if(hi-lo<0.015) break;
+      }
+      // Edge case: even q=0.1 is too big — force lowest quality
+      if(!bestUrl){
+        bestUrl=canvas.toDataURL('image/jpeg',0.1);
+        bestKb=dataUrlKB(bestUrl);
+      }
+      resolve({dataUrl:bestUrl, kb:bestKb, origKb, w, h});
+    };
+    img.onerror=reject;
+    img.src=url;
+  });
+}
+
 /* ── Admin Tab ── */
 function AdminTab({dishes,onAdd,onDelete,t,lang,role}){
-  const [name,setName]=useState('');const [desc,setDesc]=useState('');const [emoji,setEmoji]=useState('');const [photo,setPhoto]=useState(null);const [saving,setSaving]=useState(false);
-  const handlePhoto=e=>{const f=e.target.files?.[0];if(!f||f.size>4*1024*1024)return;const r=new FileReader();r.onload=ev=>setPhoto(ev.target.result);r.readAsDataURL(f);};
-  const submit=async()=>{if(!name.trim())return;setSaving(true);await onAdd({name:name.trim(),desc:desc.trim(),emoji:emoji.trim()||'🍽️',photo,ts:Date.now()});setName('');setDesc('');setEmoji('');setPhoto(null);setSaving(false);};
+  const [name,setName]=useState('');const [desc,setDesc]=useState('');const [emoji,setEmoji]=useState('');
+  const [photo,setPhoto]=useState(null);
+  const [photoInfo,setPhotoInfo]=useState(null); // {origKb, compKb, w, h}
+  const [compressing,setCompressing]=useState(false);
+  const [saving,setSaving]=useState(false);
+
+  const handlePhoto=async e=>{
+    const f=e.target.files?.[0];
+    if(!f)return;
+    setCompressing(true);
+    try{
+      // compressImage now returns origKb itself (measured from file.size)
+      const {dataUrl,kb,origKb,w,h}=await compressImage(f,100,900);
+      setPhoto(dataUrl);
+      setPhotoInfo({origKb,compKb:kb,w,h});
+    }catch(err){
+      const origKb=Math.round(f.size/1024);
+      const r=new FileReader();
+      r.onload=ev=>{setPhoto(ev.target.result);setPhotoInfo({origKb,compKb:origKb});};
+      r.readAsDataURL(f);
+    }
+    setCompressing(false);
+  };
+  const submit=async()=>{if(!name.trim())return;setSaving(true);await onAdd({name:name.trim(),desc:desc.trim(),emoji:emoji.trim()||'🍽️',photo,ts:Date.now()});setName('');setDesc('');setEmoji('');setPhoto(null);setPhotoInfo(null);setSaving(false);};
   return <div style={{padding:'12px 12px 0'}}>
     <div style={{background:'linear-gradient(135deg,#FFF3E0,#FFE8C0)',borderLeft:'4px solid var(--amber)',borderRadius:'0 12px 12px 0',padding:'11px 14px',fontSize:12,color:'var(--brown-l)',marginBottom:16,lineHeight:1.8}}>
       {role==='admin'?(lang==='zh'?'🔑 管理员模式 · 添加/删除菜品，数据实时同步到 Firebase ☁️':'🔑 Admin Mode · Add/delete dishes, synced via Firebase ☁️'):(lang==='zh'?'🤝 协管模式 · 添加/删除菜品，数据实时同步到 Firebase ☁️':'🤝 Manager Mode · Add/delete dishes, synced via Firebase ☁️')}
     </div>
+    <BulkImport onBatchAdd={onAdd} lang={lang}/>
     <div style={{background:'white',borderRadius:18,padding:'18px 14px',boxShadow:'0 3px 16px var(--shadow)',marginBottom:14}}>
       <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:16,color:'var(--brown)',marginBottom:16}}>{t.addDishTitle}</div>
       <div style={{marginBottom:13}}>
         <label style={{fontSize:12,color:'var(--brown-l)',display:'block',marginBottom:6}}>{t.photoLabel}</label>
         <label style={{display:'block',border:'2px dashed #E8DDD0',borderRadius:14,overflow:'hidden',cursor:'pointer',background:'var(--warm)',minHeight:100,position:'relative'}}>
           <input type="file" accept="image/*" onChange={handlePhoto} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}}/>
-          {photo?<img src={photo} style={{width:'100%',maxHeight:160,objectFit:'cover',display:'block'}} alt=""/>:<div style={{textAlign:'center',padding:'22px 10px'}}><div style={{fontSize:30,marginBottom:6}}>📷</div><div style={{fontSize:12,color:'var(--brown-l)',whiteSpace:'pre-line'}}>{t.uploadPrompt}</div></div>}
+          {compressing
+            ? <div style={{textAlign:'center',padding:'28px 10px'}}>
+                <div style={{display:'inline-block',width:28,height:28,border:'3px solid #E8DDD0',borderTopColor:'var(--amber)',borderRadius:'50%',animation:'spin 0.7s linear infinite',marginBottom:8}}/>
+                <div style={{fontSize:12,color:'var(--brown-l)'}}>{lang==='zh'?'压缩中…':'Compressing…'}</div>
+              </div>
+            : photo
+              ? <img src={photo} style={{width:'100%',maxHeight:160,objectFit:'cover',display:'block'}} alt=""/>
+              : <div style={{textAlign:'center',padding:'22px 10px'}}>
+                  <div style={{fontSize:30,marginBottom:6}}>📷</div>
+                  <div style={{fontSize:12,color:'var(--brown-l)',whiteSpace:'pre-line'}}>{t.uploadPrompt}</div>
+                  <div style={{fontSize:11,color:'#C0B0A0',marginTop:5}}>{lang==='zh'?'自动压缩至 100 KB 以内 ✓':'Auto-compressed to under 100 KB ✓'}</div>
+                </div>}
         </label>
+        {/* compression result badge */}
+        {photoInfo && !compressing && (
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:7,padding:'7px 12px',background: photoInfo.origKb > photoInfo.compKb ? 'linear-gradient(135deg,#F0FFF0,#E8F8E8)' : '#F5F5F5',borderRadius:10,border:`1px solid ${photoInfo.origKb > photoInfo.compKb ? '#A8D8A8':'#E0E0E0'}`}}>
+            <div style={{fontSize:11,color:'#5A7A5A'}}>
+              {photoInfo.origKb > photoInfo.compKb
+                ? `✅ ${lang==='zh'?'已压缩':'Compressed'} ${photoInfo.origKb} KB → ${photoInfo.compKb} KB`
+                : `✓ ${lang==='zh'?'无需压缩':'No compression needed'} · ${photoInfo.compKb} KB`}
+            </div>
+            <div style={{fontSize:10,color:'#90A090'}}>
+              {photoInfo.w && photoInfo.h ? `${photoInfo.w}×${photoInfo.h}` : ''}
+            </div>
+          </div>
+        )}
       </div>
       {[{l:t.nameLabel,v:name,s:setName,p:t.namePh,m:25},{l:t.descLabel,v:desc,s:setDesc,p:t.descPh,m:60,a:true},{l:t.emojiLabel,v:emoji,s:setEmoji,p:t.emojiPh,m:4}].map(({l,v,s,p,m,a})=>(
         <div key={l} style={{marginBottom:12}}>
@@ -315,7 +601,7 @@ function AdminTab({dishes,onAdd,onDelete,t,lang,role}){
           :<input value={v} onChange={e=>s(e.target.value)} placeholder={p} maxLength={m} style={{width:'100%',border:'1.5px solid #E8DDD0',borderRadius:12,padding:'11px 13px',fontSize:15,fontFamily:"'Noto Sans SC',sans-serif",background:'var(--warm)',outline:'none'}}/>}
         </div>
       ))}
-      <button onClick={submit} disabled={!name.trim()||saving} style={{width:'100%',background:name.trim()&&!saving?'linear-gradient(135deg,var(--amber-d),var(--amber))':'#DDD',color:'white',border:'none',borderRadius:14,padding:17,fontSize:16,cursor:name.trim()&&!saving?'pointer':'not-allowed',letterSpacing:2,fontFamily:"'Noto Sans SC',sans-serif",transition:'all 0.2s'}}>{saving?'保存中…':t.addDishBtn}</button>
+      <button onClick={submit} disabled={!name.trim()||saving||compressing} style={{width:'100%',background:name.trim()&&!saving&&!compressing?'linear-gradient(135deg,var(--amber-d),var(--amber))':'#DDD',color:'white',border:'none',borderRadius:14,padding:17,fontSize:16,cursor:name.trim()&&!saving&&!compressing?'pointer':'not-allowed',letterSpacing:2,fontFamily:"'Noto Sans SC',sans-serif",transition:'all 0.2s'}}>{saving?'保存中…':compressing?(lang==='zh'?'图片处理中…':'Processing…'):t.addDishBtn}</button>
     </div>
     {dishes.length>0&&<div style={{background:'white',borderRadius:18,padding:'18px 14px',boxShadow:'0 3px 16px var(--shadow)',marginBottom:14}}>
       <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:16,color:'var(--brown)',marginBottom:14}}>{t.manageDishTitle}</div>
@@ -351,6 +637,486 @@ function NotifsTab({orders,t,lang}){
     ))}
   </div>;
 }
+
+
+/* ── Blind Box Tab ── Mucha Art Nouveau style ── */
+/* ── Mucha Card Back ── */
+function MuchaCardBack(){
+  const id = React.useId ? React.useId() : Math.random().toString(36).slice(2);
+  const gid = 'cbg'+id.replace(/[^a-z0-9]/gi,'');
+  return (
+    <svg viewBox="0 0 100 148" style={{width:'100%',height:'100%',borderRadius:10,display:'block'}} xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <radialGradient id={gid} cx="50%" cy="50%" r="60%">
+          <stop offset="0%" stopColor="#2E1A0A"/>
+          <stop offset="100%" stopColor="#0E0705"/>
+        </radialGradient>
+        <pattern id={'dot'+gid} x="0" y="0" width="8" height="8" patternUnits="userSpaceOnUse">
+          <circle cx="4" cy="4" r="0.7" fill="#C8873A" opacity="0.25"/>
+        </pattern>
+      </defs>
+      <rect width="100" height="148" rx="8" fill={`url(#${gid})`}/>
+      <rect width="100" height="148" rx="8" fill={`url(#dot${gid})`}/>
+      <rect x="4" y="4" width="92" height="140" rx="6" fill="none" stroke="#C8873A" strokeWidth="0.8" opacity="0.55"/>
+      <rect x="7" y="7" width="86" height="134" rx="5" fill="none" stroke="#9B6028" strokeWidth="0.4" opacity="0.35"/>
+      {/* corner dots */}
+      {[[14,14],[86,14],[14,134],[86,134]].map(([x,y],i)=><circle key={i} cx={x} cy={y} r="2" fill="#C8873A" opacity="0.6"/>)}
+      {/* centre medallion */}
+      <circle cx="50" cy="74" r="24" fill="none" stroke="#C8873A" strokeWidth="0.7" opacity="0.6" strokeDasharray="3 2"/>
+      <circle cx="50" cy="74" r="17" fill="none" stroke="#9B6028" strokeWidth="0.5" opacity="0.4"/>
+      {[0,60,120,180,240,300].map(a=>{
+        const r=a*Math.PI/180;
+        return <circle key={a} cx={50+24*Math.sin(r)} cy={74-24*Math.cos(r)} r="2.2" fill="#C8873A" opacity="0.75"/>;
+      })}
+      {/* centre star */}
+      <text x="50" y="79" textAnchor="middle" fontSize="16" fill="#C8873A" opacity="0.85">✦</text>
+      {/* top/bottom vine arcs */}
+      <path d="M18 20 Q50 30 82 20" stroke="#C8873A" strokeWidth="0.7" fill="none" opacity="0.5"/>
+      <path d="M18 128 Q50 118 82 128" stroke="#C8873A" strokeWidth="0.7" fill="none" opacity="0.5"/>
+      <circle cx="50" cy="20" r="2.5" fill="#C8873A" opacity="0.65"/>
+      <circle cx="50" cy="128" r="2.5" fill="#C8873A" opacity="0.65"/>
+      {/* side flourishes */}
+      <path d="M8 55 C14 60,14 68,8 74 C14 80,14 88,8 93" stroke="#C8873A" strokeWidth="0.5" fill="none" opacity="0.4"/>
+      <path d="M92 55 C86 60,86 68,92 74 C86 80,86 88,92 93" stroke="#C8873A" strokeWidth="0.5" fill="none" opacity="0.4"/>
+    </svg>
+  );
+}
+
+/* ── Card Face (Mucha style) ── */
+function CardFace({dish}){
+  return (
+    <div style={{width:'100%',height:'100%',
+      background:'linear-gradient(170deg,#FDF0D8 0%,#F5E4BC 60%,#EDD090 100%)',
+      display:'flex',flexDirection:'column',borderRadius:12,overflow:'hidden',
+      border:'1.5px solid rgba(155,96,40,0.55)',
+    }}>
+      {/* top bar */}
+      <div style={{background:'linear-gradient(90deg,#3D2010,#7A4A1A,#3D2010)',
+        padding:'4px 6px',textAlign:'center',flexShrink:0,position:'relative'}}>
+        <div style={{fontSize:7,color:'rgba(255,220,140,0.8)',letterSpacing:2.5,
+          fontFamily:"'Crimson Pro',serif",fontStyle:'italic'}}>家的味道 · Home Kitchen</div>
+        {/* corner dots */}
+        <div style={{position:'absolute',left:5,top:'50%',transform:'translateY(-50%)',
+          width:3,height:3,borderRadius:'50%',background:'rgba(200,160,80,0.7)'}}/>
+        <div style={{position:'absolute',right:5,top:'50%',transform:'translateY(-50%)',
+          width:3,height:3,borderRadius:'50%',background:'rgba(200,160,80,0.7)'}}/>
+      </div>
+
+      {/* arch frame around image */}
+      <div style={{position:'relative',flex:1,overflow:'hidden',minHeight:0}}>
+        {dish.photo
+          ? <img src={dish.photo} alt={dish.name}
+              style={{width:'100%',height:'100%',objectFit:'cover',display:'block'}}/>
+          : <div style={{width:'100%',height:'100%',
+              background:'linear-gradient(145deg,#F5E5C0,#EDD498)',
+              display:'flex',alignItems:'center',justifyContent:'center',
+              fontSize:42}}>
+              {dish.emoji||'🍽️'}
+            </div>}
+        {/* Mucha arch overlay — SVG frame */}
+        <svg style={{position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none'}}
+          viewBox="0 0 100 88" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+          {/* vignette border */}
+          <rect x="0" y="0" width="100" height="88" fill="none"
+            stroke="rgba(155,96,40,0.35)" strokeWidth="2"/>
+          {/* top arch ornament */}
+          <path d="M 5 5 Q 50 -4 95 5" stroke="rgba(200,150,60,0.5)" strokeWidth="0.8" fill="none"/>
+          {/* corner flourishes */}
+          <path d="M3 3 L10 3 L3 10" stroke="rgba(155,96,40,0.6)" strokeWidth="0.7" fill="none"/>
+          <path d="M97 3 L90 3 L97 10" stroke="rgba(155,96,40,0.6)" strokeWidth="0.7" fill="none"/>
+          <path d="M3 85 L10 85 L3 78" stroke="rgba(155,96,40,0.6)" strokeWidth="0.7" fill="none"/>
+          <path d="M97 85 L90 85 L97 78" stroke="rgba(155,96,40,0.6)" strokeWidth="0.7" fill="none"/>
+          {/* radial vignette */}
+          <radialGradient id="vig" cx="50%" cy="50%" r="70%">
+            <stop offset="60%" stopColor="transparent"/>
+            <stop offset="100%" stopColor="rgba(80,40,10,0.3)"/>
+          </radialGradient>
+          <rect x="0" y="0" width="100" height="88" fill="url(#vig)"/>
+        </svg>
+      </div>
+
+      {/* name plate */}
+      <div style={{
+        background:'linear-gradient(to bottom,rgba(245,224,170,0.97),#E8CE8A)',
+        padding:'5px 7px 4px',flexShrink:0,
+        borderTop:'1px solid rgba(155,96,40,0.4)',textAlign:'center',
+      }}>
+        <div style={{display:'flex',alignItems:'center',gap:3,justifyContent:'center',marginBottom:2}}>
+          <div style={{flex:1,height:0.5,background:'rgba(155,96,40,0.35)'}}/>
+          <span style={{fontSize:6,color:'rgba(155,96,40,0.55)'}}>✦</span>
+          <div style={{flex:1,height:0.5,background:'rgba(155,96,40,0.35)'}}/>
+        </div>
+        <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:11,fontWeight:700,
+          color:'#4A2C18',letterSpacing:1.5,lineHeight:1.3,
+          overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+          {dish.name}
+        </div>
+        {dish.desc&&<div style={{fontSize:7.5,color:'#7A5040',marginTop:1,
+          overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',
+          fontFamily:"'Crimson Pro',serif",fontStyle:'italic',letterSpacing:0.3}}>
+          {dish.desc}
+        </div>}
+      </div>
+
+      {/* bottom bar */}
+      <div style={{background:'linear-gradient(90deg,#3D2010,#7A4A1A,#3D2010)',
+        padding:'3px 6px',textAlign:'center',flexShrink:0}}>
+        <div style={{fontSize:6.5,color:'rgba(255,210,120,0.5)',letterSpacing:3}}>· ✦ ·</div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Single playing card wrapper with flip ── */
+function MuchaCard({dish, revealed, phase, onClick, angle, yOff, index}){
+  const [flipped, setFlipped] = React.useState(false);
+  const prevRevealed = React.useRef(false);
+
+  React.useEffect(()=>{
+    if(revealed && !prevRevealed.current){
+      setFlipped(true);
+    }
+    prevRevealed.current = revealed;
+  },[revealed]);
+
+  const isFanned  = phase==='fanned';
+  const isChosen  = phase==='chosen'||phase==='revealed';
+  const isHidden  = (phase==='chosen'||phase==='revealed') && !revealed;
+
+  const baseTransform = revealed
+    ? 'translate(-50%,-50%) rotate(0deg) scale(1.2)'
+    : isHidden
+      ? `translateX(-50%) rotate(${angle}deg) translateY(${yOff}px) scale(0.82)`
+      : `translateX(-50%) rotate(${angle}deg) translateY(${yOff}px) scale(1)`;
+
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        position:'absolute', left:'50%', top:'50%',
+        width:130, height:192,
+        transform: baseTransform,
+        zIndex: revealed ? 20 : isHidden ? 1 : 5+index,
+        opacity: isHidden ? 0.22 : 1,
+        filter: isHidden ? 'blur(0.8px) brightness(0.45)' : 'none',
+        cursor: isFanned ? 'pointer' : 'default',
+        transition:'transform 0.55s cubic-bezier(0.34,1.4,0.64,1), opacity 0.4s, filter 0.35s',
+        animation: phase==='fanned' ? `fanSpread 0.55s cubic-bezier(0.34,1.4,0.64,1) ${index*0.13}s both` : 'none',
+        perspective: 600,
+      }}
+    >
+      {/* flip container */}
+      <div style={{
+        width:'100%', height:'100%',
+        position:'relative',
+        transformStyle:'preserve-3d',
+        transition: flipped ? 'transform 0.55s ease' : 'none',
+        transform: flipped ? 'rotateY(180deg)' : 'rotateY(0)',
+        borderRadius:12,
+        boxShadow: revealed
+          ? '0 20px 50px rgba(0,0,0,0.65), 0 0 28px rgba(200,135,58,0.45)'
+          : isFanned
+            ? '0 10px 30px rgba(0,0,0,0.5), 0 0 0 1px rgba(200,135,58,0.35)'
+            : '0 6px 20px rgba(0,0,0,0.4)',
+      }}>
+        {/* back face */}
+        <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',borderRadius:12,overflow:'hidden'}}>
+          <MuchaCardBack/>
+        </div>
+        {/* front face */}
+        <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',
+          transform:'rotateY(180deg)',borderRadius:12,overflow:'hidden'}}>
+          <CardFace dish={dish}/>
+        </div>
+      </div>
+
+      {/* hover glow when fanned */}
+      {isFanned && (
+        <div style={{
+          position:'absolute',inset:-2,borderRadius:14,
+          background:'transparent',
+          transition:'box-shadow 0.2s',
+          pointerEvents:'none',
+        }}/>
+      )}
+    </div>
+  );
+}
+
+/* ── Deck fan (decorative, back-only) ── */
+function DeckFan({count}){
+  const total = Math.min(count, 12);
+  const spread = Math.min(total * 6, 56); // total angle
+  return (
+    <div style={{position:'relative',width:140,height:190,margin:'0 auto'}}>
+      {Array.from({length:total}).map((_,i)=>{
+        const angle = -spread/2 + (spread/(Math.max(total-1,1)))*i;
+        const yOff = Math.abs(angle)*0.4;
+        return (
+          <div key={i} style={{
+            position:'absolute',left:'50%',top:yOff,
+            width:90,height:133,
+            transform:`translateX(-50%) rotate(${angle}deg)`,
+            borderRadius:9,overflow:'hidden',
+            boxShadow:'0 3px 12px rgba(0,0,0,0.35)',
+            animation:`deckEntry 0.5s ease ${i*0.04}s both`,
+          }}>
+            <MuchaCardBack/>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── Blind Box Tab (Mucha style) ── */
+function BlindBoxTab({dishes,addToCart,t,lang}){
+  const [phase,setPhase]   = React.useState('idle');
+  const [cards,setCards]   = React.useState([]);
+  const [chosen,setChosen] = React.useState(null);
+  const timerRef = React.useRef(null);
+
+  React.useEffect(()=>()=>clearTimeout(timerRef.current),[]);
+
+  const draw = ()=>{
+    if(!dishes.length) return;
+    const pool = [...dishes].sort(()=>Math.random()-0.5);
+    setCards(pool.slice(0,Math.min(3,pool.length)));
+    setChosen(null);
+    setPhase('shuffling');
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(()=>setPhase('fanned'),1500);
+  };
+
+  const pickCard = (i) => {
+    if(phase!=='fanned') return;
+    setChosen(i);
+    setPhase('chosen');
+    setTimeout(()=>setPhase('revealed'),350);
+  };
+
+  const reset = () => { setPhase('idle'); setCards([]); setChosen(null); };
+
+  if(!dishes.length) return (
+    <div style={{minHeight:'60vh',display:'flex',flexDirection:'column',alignItems:'center',
+      justifyContent:'center',padding:32,textAlign:'center',
+      background:'linear-gradient(170deg,#1A0E08,#2D1A0E)'}}>
+      <div style={{fontSize:52,marginBottom:16}}>🎴</div>
+      <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:15,color:'rgba(200,160,80,0.7)',lineHeight:2}}>
+        {t.noDishesTip}
+      </div>
+    </div>
+  );
+
+  const ANGLES  = [-23, 0, 23];
+  const Y_OFFS  = [20, 0, 20];
+
+  return (
+    <div style={{
+      minHeight:'calc(100vh - 110px)',
+      background:'linear-gradient(170deg,#140A04 0%,#2A1408 45%,#3A1E10 100%)',
+      position:'relative',overflow:'hidden',
+      display:'flex',flexDirection:'column',alignItems:'center',
+    }}>
+
+      {/* ── Mucha SVG wallpaper ── */}
+      <svg style={{position:'absolute',inset:0,width:'100%',height:'100%',
+        opacity:0.06,pointerEvents:'none'}}
+        viewBox="0 0 400 700" xmlns="http://www.w3.org/2000/svg">
+        {[[18,18],[382,18],[18,682],[382,682]].map(([cx,cy],i)=>(
+          <g key={i} transform={`translate(${cx},${cy})`}>
+            {[0,45,90,135].map(a=>(
+              <ellipse key={a} cx="0" cy="0" rx="20" ry="6" fill="#C8873A"
+                transform={`rotate(${a})`}/>
+            ))}
+            <circle cx="0" cy="0" r="5.5" fill="#E8A85A"/>
+          </g>
+        ))}
+        <path d="M55 0 Q200 85 345 0" stroke="#C8873A" strokeWidth="1.5" fill="none"/>
+        <path d="M75 0 Q200 62 325 0" stroke="#9B6028" strokeWidth="0.7" fill="none"/>
+        <path d="M0 140 C28 155,38 195,18 215 C-2 235,28 260,12 282 C-4 305,32 328,8 355"
+          stroke="#C8873A" strokeWidth="0.9" fill="none"/>
+        <path d="M400 140 C372 155,362 195,382 215 C402 235,372 260,388 282 C404 305,368 328,392 355"
+          stroke="#C8873A" strokeWidth="0.9" fill="none"/>
+        <circle cx="200" cy="350" r="65" stroke="#C8873A" strokeWidth="0.7" fill="none" strokeDasharray="4 3"/>
+        <circle cx="200" cy="350" r="80" stroke="#9B6028" strokeWidth="0.5" fill="none" strokeDasharray="2 5"/>
+        {[0,60,120,180,240,300].map(a=>{
+          const r=a*Math.PI/180;
+          return <ellipse key={a} cx={200+45*Math.sin(r)} cy={350-45*Math.cos(r)}
+            rx="7" ry="20" fill="#C8873A" opacity="0.5"
+            transform={`rotate(${a},${200+45*Math.sin(r)},${350-45*Math.cos(r)})`}/>;
+        })}
+        <path d="M28 696 Q200 672 372 696" stroke="#C8873A" strokeWidth="1.4" fill="none"/>
+      </svg>
+
+      {/* ── Header ── */}
+      <div style={{textAlign:'center',padding:'26px 24px 0',position:'relative',zIndex:2,width:'100%'}}>
+        <div style={{
+          fontFamily:"'Noto Serif SC',serif",fontSize:21,fontWeight:700,letterSpacing:4,
+          background:'linear-gradient(90deg,#B87830,#FFE4A0,#E8A850,#FFE4A0,#B87830)',
+          backgroundSize:'300% auto',
+          WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',
+          animation:'shimmerMucha 5s linear infinite',
+          marginBottom:5,
+        }}>{t.blindBoxTitle}</div>
+        <div style={{fontFamily:"'Crimson Pro',serif",fontStyle:'italic',fontSize:13,
+          color:'rgba(200,155,70,0.55)',letterSpacing:2}}>
+          {t.blindBoxSub}
+        </div>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:10,margin:'10px 0 0'}}>
+          <div style={{width:36,height:1,background:'linear-gradient(to right,transparent,#C8873A)'}}/>
+          <span style={{color:'#C8873A',fontSize:13}}>✦</span>
+          <div style={{width:36,height:1,background:'linear-gradient(to left,transparent,#C8873A)'}}/>
+        </div>
+      </div>
+
+      {/* ── Card Stage ── */}
+      <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',
+        justifyContent:'center',position:'relative',width:'100%',minHeight:360,zIndex:2}}>
+
+        {/* IDLE */}
+        {phase==='idle'&&(
+          <div style={{textAlign:'center',display:'flex',flexDirection:'column',
+            alignItems:'center',gap:24,animation:'floatUp 3.5s ease-in-out infinite'}}>
+            <div style={{position:'relative'}}>
+              <DeckFan count={dishes.length}/>
+              {/* card count badge */}
+              <div style={{
+                position:'absolute',bottom:-10,left:'50%',transform:'translateX(-50%)',
+                background:'rgba(200,135,58,0.18)',border:'1px solid rgba(200,135,58,0.4)',
+                borderRadius:20,padding:'3px 12px',whiteSpace:'nowrap',
+                fontSize:11,color:'rgba(255,210,120,0.75)',letterSpacing:0.5,
+              }}>
+                {dishes.length} {lang==='zh'?`道菜 · 共${dishes.length}张牌`:`dishes · ${dishes.length} cards`}
+              </div>
+            </div>
+            <button onClick={draw} style={{
+              marginTop:16,
+              background:'linear-gradient(135deg,#7A3E10,#C8873A,#E8A850)',
+              border:'1px solid rgba(232,168,80,0.35)',
+              borderRadius:32,padding:'15px 40px',fontSize:15,
+              color:'#FFF5DC',fontFamily:"'Noto Serif SC',serif",
+              letterSpacing:3,cursor:'pointer',
+              boxShadow:'0 6px 24px rgba(100,50,0,0.55), inset 0 1px 0 rgba(255,220,100,0.2)',
+              transition:'transform 0.15s, box-shadow 0.15s',
+            }}>
+              ✦ {lang==='zh'?'开始抽卡':'Draw Cards'} ✦
+            </button>
+          </div>
+        )}
+
+        {/* SHUFFLING */}
+        {phase==='shuffling'&&(
+          <div style={{textAlign:'center'}}>
+            <div style={{display:'flex',justifyContent:'center',marginBottom:22,gap:0}}>
+              {[0,1,2,3,4].map(i=>(
+                <div key={i} style={{
+                  width:70,height:103,borderRadius:9,
+                  overflow:'hidden',
+                  margin:'0 -8px',
+                  boxShadow:'0 5px 18px rgba(0,0,0,0.45)',
+                  animation:`shuffleCard 0.38s ease-in-out ${i*0.09}s infinite alternate`,
+                  transform:`rotate(${(i-2)*8}deg)`,
+                  zIndex:i===2?5:3,
+                  position:'relative',
+                }}>
+                  <MuchaCardBack/>
+                </div>
+              ))}
+            </div>
+            <div style={{
+              fontFamily:"'Crimson Pro',serif",fontStyle:'italic',
+              fontSize:14,color:'rgba(200,155,70,0.75)',letterSpacing:2,
+              animation:'glowPulse 1s ease-in-out infinite',
+            }}>{t.shuffling}</div>
+          </div>
+        )}
+
+        {/* FANNED / CHOSEN / REVEALED */}
+        {(phase==='fanned'||phase==='chosen'||phase==='revealed')&&(
+          <div style={{position:'relative',width:'100%',height:280,
+            display:'flex',alignItems:'center',justifyContent:'center'}}>
+            {cards.map((dish,i)=>(
+              <MuchaCard
+                key={dish.id}
+                dish={dish}
+                revealed={phase==='revealed' && chosen===i}
+                phase={phase}
+                onClick={()=>pickCard(i)}
+                angle={ANGLES[i]}
+                yOff={Y_OFFS[i]}
+                index={i}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* pick hint */}
+        {phase==='fanned'&&(
+          <div style={{
+            fontFamily:"'Crimson Pro',serif",fontStyle:'italic',
+            fontSize:13,color:'rgba(200,155,70,0.6)',letterSpacing:1.5,
+            marginTop:6,animation:'glowPulse 2s ease-in-out infinite',textAlign:'center',
+          }}>✦ {t.drawHint} ✦</div>
+        )}
+      </div>
+
+      {/* ── Revealed info panel ── */}
+      {phase==='revealed'&&chosen!==null&&(
+        <div style={{
+          padding:'0 18px 36px',width:'100%',maxWidth:380,
+          animation:'fadeUp 0.45s ease 0.25s both',
+          position:'relative',zIndex:5,
+        }}>
+          <div style={{
+            background:'linear-gradient(145deg,rgba(38,20,8,0.97),rgba(22,10,3,0.97))',
+            border:'1px solid rgba(200,135,58,0.38)',
+            borderRadius:22,padding:'20px 20px 18px',
+            backdropFilter:'blur(10px)',
+            boxShadow:'0 10px 36px rgba(0,0,0,0.5)',
+          }}>
+            {/* top ornament */}
+            <div style={{textAlign:'center',marginBottom:14}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,justifyContent:'center',marginBottom:10}}>
+                <div style={{flex:1,height:1,background:'linear-gradient(to right,transparent,rgba(200,135,58,0.4))'}}/>
+                <span style={{color:'rgba(200,135,58,0.55)',fontSize:11}}>✦ ✦ ✦</span>
+                <div style={{flex:1,height:1,background:'linear-gradient(to left,transparent,rgba(200,135,58,0.4))'}}/>
+              </div>
+              <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:19,fontWeight:700,
+                color:'#FFE4A0',letterSpacing:3,marginBottom:5}}>
+                {cards[chosen]?.emoji||'🍽️'} {cards[chosen]?.name}
+              </div>
+              {cards[chosen]?.desc&&(
+                <div style={{fontFamily:"'Crimson Pro',serif",fontStyle:'italic',
+                  fontSize:13,color:'rgba(200,155,70,0.65)',lineHeight:1.7,letterSpacing:0.3}}>
+                  {cards[chosen].desc}
+                </div>
+              )}
+            </div>
+            {/* buttons */}
+            <div style={{display:'flex',gap:10}}>
+              <button onClick={reset} style={{
+                flex:1,padding:'13px 0',borderRadius:14,
+                background:'rgba(200,135,58,0.1)',
+                border:'1px solid rgba(200,135,58,0.28)',
+                color:'rgba(255,220,140,0.75)',fontSize:13,
+                fontFamily:"'Noto Sans SC',sans-serif",cursor:'pointer',letterSpacing:0.5,
+              }}>{t.again}</button>
+              <button onClick={()=>addToCart(cards[chosen].id)} style={{
+                flex:2,padding:'13px 0',borderRadius:14,
+                background:'linear-gradient(135deg,#7A3E10,#C8873A)',
+                border:'none',color:'#FFF5DC',fontSize:13,
+                fontFamily:"'Noto Sans SC',sans-serif",cursor:'pointer',letterSpacing:0.5,
+                boxShadow:'0 5px 18px rgba(100,50,0,0.45)',
+              }}>{t.addToCartFromBox}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 /* ── Receipt Modal ── */
 function ReceiptModal({receipt,onClose,t,lang,showToast}){
@@ -488,8 +1254,8 @@ function App(){
       </div>
       {/* Tabs */}
       <div style={{display:'flex',background:'rgba(0,0,0,0.2)'}}>
-        {['menu','cart',...(canManage?['admin','notifications']:[])].map(k=>{
-          const labels={menu:t.menuTab,cart:t.cartTab,admin:t.adminTab,notifications:t.notifTab};
+        {['menu','cart','blindbox',...(canManage?['admin','notifications']:[])].map(k=>{
+          const labels={menu:t.menuTab,cart:t.cartTab,admin:t.adminTab,notifications:t.notifTab,blindbox:t.blindBoxTab};
           const active=tab===k;
           return <button key={k} onClick={()=>setTab(k)} style={{flex:1,padding:'11px 4px',background:'none',border:'none',cursor:'pointer',color:active?'#FFE4A0':'rgba(255,228,160,0.55)',fontSize:12,fontFamily:"'Noto Sans SC',sans-serif",letterSpacing:0.5,borderBottom:active?'2px solid #E8A85A':'2px solid transparent',transition:'all 0.2s',whiteSpace:'nowrap'}}>
             {k==='cart'&&cartCount>0?<>{t.cartTab}<span style={{display:'inline-flex',alignItems:'center',justifyContent:'center',background:'var(--red)',color:'white',borderRadius:'50%',width:16,height:16,fontSize:10,fontWeight:700,verticalAlign:'middle',marginLeft:2}}>{cartCount}</span></>:labels[k]}
@@ -504,10 +1270,11 @@ function App(){
       {tab==='cart'          &&<CartTab dishes={dishes} cart={cart} changeCart={changeCart} t={t} lang={lang}/>}
       {tab==='admin'         &&canManage&&<AdminTab dishes={dishes} onAdd={addDish} onDelete={deleteDish} t={t} lang={lang} role={role}/>}
       {tab==='notifications' &&canManage&&<NotifsTab orders={orders} t={t} lang={lang}/>}
+      {tab==='blindbox'        &&<BlindBoxTab dishes={dishes} addToCart={addToCart} t={t} lang={lang}/>}
     </div>
 
     {/* Bottom bar */}
-    {(tab==='menu'||tab==='cart')&&<div style={{position:'fixed',bottom:0,left:0,right:0,background:'white',padding:'12px 16px 20px',boxShadow:'0 -4px 20px rgba(92,61,46,0.12)',display:'flex',gap:12,alignItems:'center',zIndex:50}}>
+    {(tab==='menu'||tab==='cart')&&tab!=='blindbox'&&<div style={{position:'fixed',bottom:0,left:0,right:0,background:'white',padding:'12px 16px 20px',boxShadow:'0 -4px 20px rgba(92,61,46,0.12)',display:'flex',gap:12,alignItems:'center',zIndex:50}}>
       <div style={{flex:1}}>
         <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:15,color:'var(--brown)',fontWeight:600}}>{cartDishCount>0?`${t.totalItems} ${cartDishCount} ${lang==='zh'?t.items:'dish'+(cartDishCount>1?'es':'')}`:(lang==='zh'?'还没有选菜～':'Nothing selected~')}</div>
         <div style={{fontSize:11,color:'var(--brown-l)',marginTop:2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'55vw'}}>{Object.keys(cart).filter(id=>cart[id]>0).map(id=>dishes.find(d=>d.id===id)?.name).filter(Boolean).join('、')}</div>
