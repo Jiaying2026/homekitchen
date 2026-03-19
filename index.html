@@ -39,6 +39,7 @@ body::after {
 @keyframes floatUp { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
 @keyframes shuffleCard { from{transform:translateY(0) rotate(var(--r,0deg))} to{transform:translateY(-14px) rotate(var(--r,0deg))} }
 @keyframes deckEntry { from{opacity:0;transform:translateX(-50%) rotate(var(--angle,0deg)) translateY(20px) scale(0.85)} to{opacity:1;transform:translateX(-50%) rotate(var(--angle,0deg)) translateY(0) scale(1)} }
+@keyframes dealRow { from{opacity:0;transform:translateY(-80px) scale(0.7) rotate(var(--r,8deg))} to{opacity:1;transform:translateY(0) scale(1) rotate(0deg)} }
 
 .anim-fade-up { animation: fadeUp 0.35s ease both; }
 </style>
@@ -767,99 +768,24 @@ function CardFace({dish}){
   );
 }
 
-/* ── Single playing card wrapper with flip ── */
-function MuchaCard({dish, revealed, phase, onClick, angle, yOff, index}){
-  const [flipped, setFlipped] = React.useState(false);
-  const prevRevealed = React.useRef(false);
-
-  React.useEffect(()=>{
-    if(revealed && !prevRevealed.current){
-      setFlipped(true);
-    }
-    prevRevealed.current = revealed;
-  },[revealed]);
-
-  const isFanned  = phase==='fanned';
-  const isChosen  = phase==='chosen'||phase==='revealed';
-  const isHidden  = (phase==='chosen'||phase==='revealed') && !revealed;
-
-  const baseTransform = revealed
-    ? 'translate(-50%,-50%) rotate(0deg) scale(1.2)'
-    : isHidden
-      ? `translateX(-50%) rotate(${angle}deg) translateY(${yOff}px) scale(0.82)`
-      : `translateX(-50%) rotate(${angle}deg) translateY(${yOff}px) scale(1)`;
-
+/* ── Deck fan — all cards back-face, spread by count ── */
+function DeckFan({count, animKey}){
+  const total = Math.min(count, 14);
+  const spread = Math.min(5 + total * 5.5, 70);
   return (
-    <div
-      onClick={onClick}
-      style={{
-        position:'absolute', left:'50%', top:'50%',
-        width:130, height:192,
-        transform: baseTransform,
-        zIndex: revealed ? 20 : isHidden ? 1 : 5+index,
-        opacity: isHidden ? 0.22 : 1,
-        filter: isHidden ? 'blur(0.8px) brightness(0.45)' : 'none',
-        cursor: isFanned ? 'pointer' : 'default',
-        transition:'transform 0.55s cubic-bezier(0.34,1.4,0.64,1), opacity 0.4s, filter 0.35s',
-        animation: phase==='fanned' ? `fanSpread 0.55s cubic-bezier(0.34,1.4,0.64,1) ${index*0.13}s both` : 'none',
-        perspective: 600,
-      }}
-    >
-      {/* flip container */}
-      <div style={{
-        width:'100%', height:'100%',
-        position:'relative',
-        transformStyle:'preserve-3d',
-        transition: flipped ? 'transform 0.55s ease' : 'none',
-        transform: flipped ? 'rotateY(180deg)' : 'rotateY(0)',
-        borderRadius:12,
-        boxShadow: revealed
-          ? '0 20px 50px rgba(0,0,0,0.65), 0 0 28px rgba(200,135,58,0.45)'
-          : isFanned
-            ? '0 10px 30px rgba(0,0,0,0.5), 0 0 0 1px rgba(200,135,58,0.35)'
-            : '0 6px 20px rgba(0,0,0,0.4)',
-      }}>
-        {/* back face */}
-        <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',borderRadius:12,overflow:'hidden'}}>
-          <MuchaCardBack/>
-        </div>
-        {/* front face */}
-        <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',
-          transform:'rotateY(180deg)',borderRadius:12,overflow:'hidden'}}>
-          <CardFace dish={dish}/>
-        </div>
-      </div>
-
-      {/* hover glow when fanned */}
-      {isFanned && (
-        <div style={{
-          position:'absolute',inset:-2,borderRadius:14,
-          background:'transparent',
-          transition:'box-shadow 0.2s',
-          pointerEvents:'none',
-        }}/>
-      )}
-    </div>
-  );
-}
-
-/* ── Deck fan (decorative, back-only) ── */
-function DeckFan({count}){
-  const total = Math.min(count, 12);
-  const spread = Math.min(total * 6, 56); // total angle
-  return (
-    <div style={{position:'relative',width:140,height:190,margin:'0 auto'}}>
+    <div style={{position:'relative',width:160,height:200,margin:'0 auto'}}>
       {Array.from({length:total}).map((_,i)=>{
-        const angle = -spread/2 + (spread/(Math.max(total-1,1)))*i;
-        const yOff = Math.abs(angle)*0.4;
+        const angle = total===1 ? 0 : -spread/2 + (spread/(total-1))*i;
+        const yOff  = Math.pow(Math.abs(angle)/spread*2,1.5)*18;
         return (
-          <div key={i} style={{
-            position:'absolute',left:'50%',top:yOff,
-            width:90,height:133,
+          <div key={`${animKey}-${i}`} style={{
+            position:'absolute', left:'50%', top:yOff,
+            width:88, height:130,
             transform:`translateX(-50%) rotate(${angle}deg)`,
-            borderRadius:9,overflow:'hidden',
-            boxShadow:'0 3px 12px rgba(0,0,0,0.35)',
-            animation:`deckEntry 0.5s ease ${i*0.04}s both`,
+            transformOrigin:'50% 110%',
+            borderRadius:9, overflow:'hidden',
+            boxShadow:'0 4px 14px rgba(0,0,0,0.4)',
+            animation:`deckEntry 0.55s cubic-bezier(0.22,1.2,0.5,1) ${i*0.045}s both`,
           }}>
             <MuchaCardBack/>
           </div>
@@ -869,54 +795,125 @@ function DeckFan({count}){
   );
 }
 
+/* ── Single row card — back or front, flips on reveal ── */
+function RowCard({dish, index, phase, chosen, onPick}){
+  const [flipped, setFlipped] = React.useState(false);
+  const isMe      = chosen === index;
+  const isDealt   = phase === 'dealt' || phase === 'pick' || phase === 'revealed';
+  const isPick    = phase === 'pick';
+  const isRevealed= phase === 'revealed';
+  const dimmed    = isRevealed && !isMe;
+
+  React.useEffect(()=>{
+    if(isRevealed && isMe && !flipped) setFlipped(true);
+  },[isRevealed, isMe]);
+
+  // entry: cards fly in from deck position (centre-top) to their row slot
+  // each card delays slightly
+  const entryDelay = `${index * 0.12}s`;
+
+  return (
+    <div
+      onClick={()=>{ if(isPick) onPick(index); }}
+      style={{
+        width:105, height:155, flexShrink:0,
+        cursor: isPick ? 'pointer' : 'default',
+        opacity: dimmed ? 0.28 : 1,
+        filter: dimmed ? 'brightness(0.4)' : 'none',
+        transform: isRevealed && isMe ? 'scale(1.22) translateY(-10px)' : 'scale(1)',
+        transition:'transform 0.5s cubic-bezier(0.34,1.4,0.64,1), opacity 0.4s, filter 0.35s',
+        animation: isDealt ? `dealRow 0.55s cubic-bezier(0.22,1.2,0.5,1) ${entryDelay} both` : 'none',
+        perspective:800, position:'relative',
+      }}
+    >
+      {/* 3-D flip inner */}
+      <div style={{
+        width:'100%', height:'100%',
+        position:'relative', transformStyle:'preserve-3d',
+        transition: flipped ? 'transform 0.6s ease' : 'none',
+        transform: flipped ? 'rotateY(180deg)' : 'rotateY(0)',
+        borderRadius:12,
+        boxShadow: isRevealed && isMe
+          ? '0 18px 48px rgba(0,0,0,0.7), 0 0 30px rgba(200,135,58,0.55)'
+          : isPick
+            ? '0 8px 28px rgba(0,0,0,0.55)'
+            : '0 5px 18px rgba(0,0,0,0.4)',
+      }}>
+        <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',
+          WebkitBackfaceVisibility:'hidden',borderRadius:12,overflow:'hidden'}}>
+          <MuchaCardBack/>
+        </div>
+        <div style={{position:'absolute',inset:0,backfaceVisibility:'hidden',
+          WebkitBackfaceVisibility:'hidden',transform:'rotateY(180deg)',
+          borderRadius:12,overflow:'hidden'}}>
+          <CardFace dish={dish}/>
+        </div>
+      </div>
+      {/* hover ring when pickable */}
+      {isPick && (
+        <div style={{
+          position:'absolute',inset:-3,borderRadius:15,pointerEvents:'none',
+          border:'1.5px solid rgba(200,160,80,0)',
+          transition:'border-color 0.2s, box-shadow 0.2s',
+        }}/>
+      )}
+    </div>
+  );
+}
+
 /* ── Blind Box Tab (Mucha style) ── */
 function BlindBoxTab({dishes,addToCart,t,lang}){
-  const [phase,setPhase]   = React.useState('idle');
-  const [cards,setCards]   = React.useState([]);
-  const [chosen,setChosen] = React.useState(null);
-  const timerRef = React.useRef(null);
-
-  React.useEffect(()=>()=>clearTimeout(timerRef.current),[]);
+  // phases: idle → shuffling → dealt → pick → revealed
+  const [phase,  setPhase]  = React.useState('idle');
+  const [cards,  setCards]  = React.useState([]);   // 3 drawn dishes
+  const [chosen, setChosen] = React.useState(null);
+  const [fanKey, setFanKey] = React.useState(0);    // re-trigger fan anim on reset
+  const timer = React.useRef(null);
+  React.useEffect(()=>()=>clearTimeout(timer.current),[]);
 
   const draw = ()=>{
     if(!dishes.length) return;
     const pool = [...dishes].sort(()=>Math.random()-0.5);
-    setCards(pool.slice(0,Math.min(3,pool.length)));
+    setCards(pool.slice(0, Math.min(3, pool.length)));
     setChosen(null);
     setPhase('shuffling');
-    clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(()=>setPhase('fanned'),1500);
+    // after shuffle animation, deal 3 cards into a row
+    timer.current = setTimeout(()=>setPhase('dealt'), 1600);
+    // brief pause then let user pick
+    timer.current = setTimeout(()=>setPhase('pick'),  2100);
   };
 
   const pickCard = (i) => {
-    if(phase!=='fanned') return;
+    if(phase !== 'pick') return;
     setChosen(i);
-    setPhase('chosen');
-    setTimeout(()=>setPhase('revealed'),350);
+    setPhase('revealed');
   };
 
-  const reset = () => { setPhase('idle'); setCards([]); setChosen(null); };
+  const reset = ()=>{
+    setPhase('idle');
+    setCards([]);
+    setChosen(null);
+    setFanKey(k=>k+1);
+  };
+
+  const zh = lang==='zh';
 
   if(!dishes.length) return (
-    <div style={{minHeight:'60vh',display:'flex',flexDirection:'column',alignItems:'center',
-      justifyContent:'center',padding:32,textAlign:'center',
+    <div style={{minHeight:'60vh',display:'flex',flexDirection:'column',
+      alignItems:'center',justifyContent:'center',padding:32,textAlign:'center',
       background:'linear-gradient(170deg,#1A0E08,#2D1A0E)'}}>
       <div style={{fontSize:52,marginBottom:16}}>🎴</div>
-      <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:15,color:'rgba(200,160,80,0.7)',lineHeight:2}}>
-        {t.noDishesTip}
-      </div>
+      <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:15,
+        color:'rgba(200,160,80,0.7)',lineHeight:2}}>{t.noDishesTip}</div>
     </div>
   );
-
-  const ANGLES  = [-23, 0, 23];
-  const Y_OFFS  = [20, 0, 20];
 
   return (
     <div style={{
       minHeight:'calc(100vh - 110px)',
       background:'linear-gradient(170deg,#140A04 0%,#2A1408 45%,#3A1E10 100%)',
-      position:'relative',overflow:'hidden',
-      display:'flex',flexDirection:'column',alignItems:'center',
+      position:'relative', overflow:'hidden',
+      display:'flex', flexDirection:'column', alignItems:'center',
     }}>
 
       {/* ── Mucha SVG wallpaper ── */}
@@ -949,20 +946,17 @@ function BlindBoxTab({dishes,addToCart,t,lang}){
         <path d="M28 696 Q200 672 372 696" stroke="#C8873A" strokeWidth="1.4" fill="none"/>
       </svg>
 
-      {/* ── Header ── */}
+      {/* ── Title ── */}
       <div style={{textAlign:'center',padding:'26px 24px 0',position:'relative',zIndex:2,width:'100%'}}>
         <div style={{
           fontFamily:"'Noto Serif SC',serif",fontSize:21,fontWeight:700,letterSpacing:4,
           background:'linear-gradient(90deg,#B87830,#FFE4A0,#E8A850,#FFE4A0,#B87830)',
           backgroundSize:'300% auto',
           WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',
-          animation:'shimmerMucha 5s linear infinite',
-          marginBottom:5,
+          animation:'shimmerMucha 5s linear infinite', marginBottom:5,
         }}>{t.blindBoxTitle}</div>
         <div style={{fontFamily:"'Crimson Pro',serif",fontStyle:'italic',fontSize:13,
-          color:'rgba(200,155,70,0.55)',letterSpacing:2}}>
-          {t.blindBoxSub}
-        </div>
+          color:'rgba(200,155,70,0.55)',letterSpacing:2}}>{t.blindBoxSub}</div>
         <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:10,margin:'10px 0 0'}}>
           <div style={{width:36,height:1,background:'linear-gradient(to right,transparent,#C8873A)'}}/>
           <span style={{color:'#C8873A',fontSize:13}}>✦</span>
@@ -970,102 +964,103 @@ function BlindBoxTab({dishes,addToCart,t,lang}){
         </div>
       </div>
 
-      {/* ── Card Stage ── */}
+      {/* ── Main stage ── */}
       <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',
-        justifyContent:'center',position:'relative',width:'100%',minHeight:360,zIndex:2}}>
+        justifyContent:'center',width:'100%',zIndex:2,padding:'20px 0'}}>
 
-        {/* IDLE */}
-        {phase==='idle'&&(
-          <div style={{textAlign:'center',display:'flex',flexDirection:'column',
-            alignItems:'center',gap:24,animation:'floatUp 3.5s ease-in-out infinite'}}>
+        {/* ━━━ IDLE: fan of all cards + draw button ━━━ */}
+        {phase==='idle' && (
+          <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:28,
+            animation:'floatUp 3.5s ease-in-out infinite'}}>
             <div style={{position:'relative'}}>
-              <DeckFan count={dishes.length}/>
-              {/* card count badge */}
+              <DeckFan count={dishes.length} animKey={fanKey}/>
               <div style={{
-                position:'absolute',bottom:-10,left:'50%',transform:'translateX(-50%)',
+                position:'absolute',bottom:-14,left:'50%',transform:'translateX(-50%)',
                 background:'rgba(200,135,58,0.18)',border:'1px solid rgba(200,135,58,0.4)',
-                borderRadius:20,padding:'3px 12px',whiteSpace:'nowrap',
+                borderRadius:20,padding:'3px 14px',whiteSpace:'nowrap',
                 fontSize:11,color:'rgba(255,210,120,0.75)',letterSpacing:0.5,
               }}>
-                {dishes.length} {lang==='zh'?`道菜 · 共${dishes.length}张牌`:`dishes · ${dishes.length} cards`}
+                {dishes.length} {zh?'道菜 · 共'+dishes.length+'张牌':'dishes · '+dishes.length+' cards'}
               </div>
             </div>
             <button onClick={draw} style={{
-              marginTop:16,
               background:'linear-gradient(135deg,#7A3E10,#C8873A,#E8A850)',
               border:'1px solid rgba(232,168,80,0.35)',
-              borderRadius:32,padding:'15px 40px',fontSize:15,
+              borderRadius:32,padding:'15px 42px',fontSize:15,
               color:'#FFF5DC',fontFamily:"'Noto Serif SC',serif",
               letterSpacing:3,cursor:'pointer',
-              boxShadow:'0 6px 24px rgba(100,50,0,0.55), inset 0 1px 0 rgba(255,220,100,0.2)',
-              transition:'transform 0.15s, box-shadow 0.15s',
-            }}>
-              ✦ {lang==='zh'?'开始抽卡':'Draw Cards'} ✦
-            </button>
+              boxShadow:'0 6px 24px rgba(100,50,0,0.55),inset 0 1px 0 rgba(255,220,100,0.2)',
+            }}>✦ {zh?'开始抽卡':'Draw Cards'} ✦</button>
           </div>
         )}
 
-        {/* SHUFFLING */}
-        {phase==='shuffling'&&(
+        {/* ━━━ SHUFFLING: animated card pile ━━━ */}
+        {phase==='shuffling' && (
           <div style={{textAlign:'center'}}>
-            <div style={{display:'flex',justifyContent:'center',marginBottom:22,gap:0}}>
+            <div style={{display:'flex',justifyContent:'center',marginBottom:22}}>
               {[0,1,2,3,4].map(i=>(
                 <div key={i} style={{
-                  width:70,height:103,borderRadius:9,
-                  overflow:'hidden',
-                  margin:'0 -8px',
+                  width:72,height:106,borderRadius:9,overflow:'hidden',
+                  margin:'0 -9px',position:'relative',
                   boxShadow:'0 5px 18px rgba(0,0,0,0.45)',
-                  animation:`shuffleCard 0.38s ease-in-out ${i*0.09}s infinite alternate`,
-                  transform:`rotate(${(i-2)*8}deg)`,
                   zIndex:i===2?5:3,
-                  position:'relative',
+                  animation:`shuffleCard 0.36s ease-in-out ${i*0.08}s infinite alternate`,
+                  transform:`rotate(${(i-2)*9}deg)`,
                 }}>
                   <MuchaCardBack/>
                 </div>
               ))}
             </div>
-            <div style={{
-              fontFamily:"'Crimson Pro',serif",fontStyle:'italic',
+            <div style={{fontFamily:"'Crimson Pro',serif",fontStyle:'italic',
               fontSize:14,color:'rgba(200,155,70,0.75)',letterSpacing:2,
-              animation:'glowPulse 1s ease-in-out infinite',
-            }}>{t.shuffling}</div>
+              animation:'glowPulse 1s ease-in-out infinite'}}>{t.shuffling}</div>
           </div>
         )}
 
-        {/* FANNED / CHOSEN / REVEALED */}
-        {(phase==='fanned'||phase==='chosen'||phase==='revealed')&&(
-          <div style={{position:'relative',width:'100%',height:280,
-            display:'flex',alignItems:'center',justifyContent:'center'}}>
-            {cards.map((dish,i)=>(
-              <MuchaCard
-                key={dish.id}
-                dish={dish}
-                revealed={phase==='revealed' && chosen===i}
-                phase={phase}
-                onClick={()=>pickCard(i)}
-                angle={ANGLES[i]}
-                yOff={Y_OFFS[i]}
-                index={i}
-              />
-            ))}
-          </div>
-        )}
+        {/* ━━━ DEALT / PICK / REVEALED: three cards in a horizontal row ━━━ */}
+        {(phase==='dealt'||phase==='pick'||phase==='revealed') && (
+          <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:0,width:'100%'}}>
 
-        {/* pick hint */}
-        {phase==='fanned'&&(
-          <div style={{
-            fontFamily:"'Crimson Pro',serif",fontStyle:'italic',
-            fontSize:13,color:'rgba(200,155,70,0.6)',letterSpacing:1.5,
-            marginTop:6,animation:'glowPulse 2s ease-in-out infinite',textAlign:'center',
-          }}>✦ {t.drawHint} ✦</div>
+            {/* three cards row */}
+            <div style={{
+              display:'flex',
+              flexDirection:'row',
+              justifyContent:'center',
+              alignItems:'flex-end',
+              gap:14,
+              padding:'0 12px',
+              minHeight:200,
+            }}>
+              {cards.map((dish,i)=>(
+                <RowCard
+                  key={dish.id}
+                  dish={dish}
+                  index={i}
+                  phase={phase}
+                  chosen={chosen}
+                  onPick={pickCard}
+                />
+              ))}
+            </div>
+
+            {/* hint text */}
+            {phase==='pick' && (
+              <div style={{
+                marginTop:18,
+                fontFamily:"'Crimson Pro',serif",fontStyle:'italic',
+                fontSize:13,color:'rgba(200,155,70,0.65)',letterSpacing:1.5,
+                animation:'glowPulse 2s ease-in-out infinite',textAlign:'center',
+              }}>✦ {t.drawHint} ✦</div>
+            )}
+          </div>
         )}
       </div>
 
-      {/* ── Revealed info panel ── */}
-      {phase==='revealed'&&chosen!==null&&(
+      {/* ━━━ Revealed info panel ━━━ */}
+      {phase==='revealed' && chosen!==null && (
         <div style={{
           padding:'0 18px 36px',width:'100%',maxWidth:380,
-          animation:'fadeUp 0.45s ease 0.25s both',
+          animation:'fadeUp 0.4s ease 0.3s both',
           position:'relative',zIndex:5,
         }}>
           <div style={{
@@ -1075,48 +1070,36 @@ function BlindBoxTab({dishes,addToCart,t,lang}){
             backdropFilter:'blur(10px)',
             boxShadow:'0 10px 36px rgba(0,0,0,0.5)',
           }}>
-            {/* top ornament */}
-            <div style={{textAlign:'center',marginBottom:14}}>
+            <div style={{textAlign:'center',marginBottom:16}}>
               <div style={{display:'flex',alignItems:'center',gap:8,justifyContent:'center',marginBottom:10}}>
                 <div style={{flex:1,height:1,background:'linear-gradient(to right,transparent,rgba(200,135,58,0.4))'}}/>
                 <span style={{color:'rgba(200,135,58,0.55)',fontSize:11}}>✦ ✦ ✦</span>
                 <div style={{flex:1,height:1,background:'linear-gradient(to left,transparent,rgba(200,135,58,0.4))'}}/>
               </div>
-              <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:19,fontWeight:700,
-                color:'#FFE4A0',letterSpacing:3,marginBottom:5}}>
+              <div style={{fontFamily:"'Noto Serif SC',serif",fontSize:20,fontWeight:700,
+                color:'#FFE4A0',letterSpacing:3,marginBottom:6}}>
                 {cards[chosen]?.emoji||'🍽️'} {cards[chosen]?.name}
               </div>
-              {cards[chosen]?.desc&&(
+              {cards[chosen]?.desc && (
                 <div style={{fontFamily:"'Crimson Pro',serif",fontStyle:'italic',
                   fontSize:13,color:'rgba(200,155,70,0.65)',lineHeight:1.7,letterSpacing:0.3}}>
                   {cards[chosen].desc}
                 </div>
               )}
             </div>
-            {/* buttons */}
-            <div style={{display:'flex',gap:10}}>
-              <button onClick={reset} style={{
-                flex:1,padding:'13px 0',borderRadius:14,
-                background:'rgba(200,135,58,0.1)',
-                border:'1px solid rgba(200,135,58,0.28)',
-                color:'rgba(255,220,140,0.75)',fontSize:13,
-                fontFamily:"'Noto Sans SC',sans-serif",cursor:'pointer',letterSpacing:0.5,
-              }}>{t.again}</button>
-              <button onClick={()=>addToCart(cards[chosen].id)} style={{
-                flex:2,padding:'13px 0',borderRadius:14,
-                background:'linear-gradient(135deg,#7A3E10,#C8873A)',
-                border:'none',color:'#FFF5DC',fontSize:13,
-                fontFamily:"'Noto Sans SC',sans-serif",cursor:'pointer',letterSpacing:0.5,
-                boxShadow:'0 5px 18px rgba(100,50,0,0.45)',
-              }}>{t.addToCartFromBox}</button>
-            </div>
+            <button onClick={reset} style={{
+              width:'100%',padding:'14px 0',borderRadius:14,
+              background:'linear-gradient(135deg,#7A3E10,#C8873A)',
+              border:'none',color:'#FFF5DC',fontSize:14,
+              fontFamily:"'Noto Sans SC',sans-serif",cursor:'pointer',letterSpacing:1,
+              boxShadow:'0 5px 18px rgba(100,50,0,0.45)',
+            }}>✦ {t.again} ✦</button>
           </div>
         </div>
       )}
     </div>
   );
 }
-
 
 /* ── Receipt Modal ── */
 function ReceiptModal({receipt,onClose,t,lang,showToast}){
